@@ -72,7 +72,12 @@ class Qwen4ExpWrapper(BaseModelWrapper):
             config, "moe_intermediate_size", None
         ) or getattr(config, "intermediate_size", None)
 
-        source_names = checkpoint_names or model_names
+        if not self.dummy and not checkpoint_names:
+            raise RuntimeError(
+                "Qwen4Exp: no checkpoint parameters found under any of "
+                f"{QWEN4EXP_LAYER_PREFIX_CANDIDATES}. Refusing to guess the topology."
+            )
+        source_names = model_names if self.dummy else checkpoint_names
         self.topology = build_qwen4exp_topology(self.layer_prefix, source_names, self.num_layers)
 
     # ── topology resolution ───────────────────────────────────────────────

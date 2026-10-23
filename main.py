@@ -497,16 +497,23 @@ def resolve_model_family(model_name):
 
     name_lower = (model_name or "").lower()
     config = None
+    load_error = None
     if _needs_config_inspection(name_lower):
         try:
             config = load_dispatch_config(model_name)
-        except Exception:
+        except Exception as exc:
             if "qwen3" in name_lower or "qwen4" in name_lower:
                 # The Qwen3/Qwen4 families are decided by the config; without
                 # it there is nothing safe to dispatch to.
                 raise
             config = None
-    return classify_model(model_name, config), config
+            load_error = exc
+    try:
+        return classify_model(model_name, config), config
+    except ValueError as err:
+        if load_error is not None:
+            raise ValueError(f"{err} (config load failed: {load_error!r})") from load_error
+        raise
 
 
 def get_model_wrapper(

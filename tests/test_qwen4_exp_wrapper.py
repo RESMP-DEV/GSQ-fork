@@ -407,6 +407,22 @@ def test_main_dispatch_reports_an_unsupported_family():
         main_module.load_dispatch_config = original
 
 
+def test_dispatch_chains_a_config_load_failure():
+    main_module = _import_main()
+
+    def boom(model_name):
+        raise ConnectionError("checkpoint config is unavailable")
+
+    original = main_module.load_dispatch_config
+    main_module.load_dispatch_config = boom
+    try:
+        error = _assert_raises(ValueError, main_module.resolve_model_family, "/models/mystery")
+    finally:
+        main_module.load_dispatch_config = original
+    assert "config load failed" in str(error), error
+    assert isinstance(error.__cause__, ConnectionError), error.__cause__
+
+
 # ── fail-closed boundaries ────────────────────────────────────────────────
 
 
@@ -667,6 +683,47 @@ def test_wrapper_constructor_resolves_the_multimodal_topology():
         "model.language_model.layers.0.mlp.experts.gate_up_proj",
         "model.language_model.layers.0.mlp.experts.down_proj",
     )
+
+
+def test_wrapper_constructor_refuses_a_non_dummy_checkpoint_without_decoder_names():
+    import torch
+
+    _import_main()
+    from src.models import base as base_module
+    from src.models.qwen4_exp import Qwen4ExpWrapper
+
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList([torch.nn.Linear(3, 3)])
+
+    original_init = base_module.BaseModelWrapper.__init__
+
+    def fake_init(self, model_name, tokenizer, batch_size, seqlen, device, dtype, dummy=False):
+        self.model = TinyModel()
+        self.model.config = SimpleNamespace(num_experts=4, moe_intermediate_size=8)
+        self.dtype = dtype
+        self.device = device
+        self.dummy = False
+        self._name_to_shard = {}
+        self._single_shard = None
+
+    base_module.BaseModelWrapper.__init__ = fake_init
+    try:
+        error = _assert_raises(
+            RuntimeError,
+            Qwen4ExpWrapper,
+            "dummy",
+            None,
+            1,
+            128,
+            "cpu",
+            torch.float32,
+        )
+    finally:
+        base_module.BaseModelWrapper.__init__ = original_init
+    assert "Refusing to guess the topology" in str(error), error
 
 
 def test_wrapper_layer_prefixes_cover_every_placement_group():
