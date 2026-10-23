@@ -1,0 +1,41 @@
+{
+  "agent": "Codex parent with MiniMax implementation worker",
+  "checks": [
+    {
+      "command": "uv run --no-project --with pytest --with torch --with transformers==5.20.2 --with httpx --with 'huggingface-hub>=1.5,<2' python -m pytest tests/test_qwen4_exp_wrapper.py -q",
+      "exit": 0,
+      "result": "31 tests passed"
+    },
+    {
+      "command": "ruff check/format on src/models/__init__.py, src/models/qwen4_exp.py, and tests/test_qwen4_exp_wrapper.py",
+      "exit": 0,
+      "result": "passed"
+    },
+    {
+      "command": "python3 -m py_compile main.py src/models/__init__.py src/models/qwen4_exp.py tests/test_qwen4_exp_wrapper.py",
+      "exit": 0,
+      "result": "all files compile"
+    }
+  ],
+  "implemented": [
+    "Config/model_type dispatch before generic qwen3 name routing",
+    "Exact Qwen4Exp layer topology for model.language_model.layers",
+    "Fused 3D routed-expert, shared-expert, PLE, attention, norm, router, and hyper-connection placement groups",
+    "Host-safe movement between accelerator and meta without loading tensors",
+    "Explicit NotImplementedError for per-expert quantization, forward split, export, and perplexity evaluation",
+    "Config-load failures are chained into opaque-name dispatch errors",
+    "Non-dummy checkpoints without decoder-stack names refuse topology guessing"
+  ],
+  "non_claims": [
+    "No GSQ optimization, CUDA work, full-model instantiation, checkpoint payload read, download, or network access ran.",
+    "This is placement and dispatch only; per-expert 3D quantization, forward split, export, and perplexity evaluation remain fail-closed.",
+    "No claim is made that a Qwen4Exp checkpoint can be quantized or served by GSQ after this change."
+  ],
+  "recorded_at": "2026-10-23T20:37:00Z",
+  "schema": "resmp-gsq-work-evidence-v1",
+  "source_dirty": true,
+  "source_revision": "03fc16484c369e3127225615d5e03e8d3a6043e3",
+  "task": "Add fail-closed Qwen4Exp dispatch and placement topology to the owned GSQ fork",
+  "updated_at": "2026-10-23T20:47:00Z",
+  "worker_receipt": "20261023-130533-__7rc157"
+}

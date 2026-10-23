@@ -457,56 +457,155 @@ def train_all_layers(model, train_loader, val_loader, gpt_loader, logger, config
     finally:
         _cleanup_act_cache_mmap(train_all, val_all, gpt_all)
 
-def get_model_wrapper(model_name, tokenizer, batch_size, seqlen, device, dtype, world_size, dummy=False):
-    name_lower = model_name.lower()
-    if 'llama' in name_lower:
+def load_dispatch_config(model_name):
+    """Load the checkpoint config used for model-family dispatch."""
+    from transformers import AutoConfig
+
+    return AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+
+
+def _needs_config_inspection(name_lower):
+    """Return True when the model name alone is not decisive.
+
+    Qwen4-shaped names always need the config: the family has to be confirmed
+    by ``model_type`` before anything else is routed. Qwen3/Qwen3.5 names need
+    it to tell dense from MoE, and an unrecognized name needs it to find a
+    config-driven family. The remaining families dispatch on the name alone,
+    exactly as before.
+    """
+    if "qwen4" in name_lower:
+        return True
+    name_is_decisive = (
+        "llama" in name_lower
+        or "kimi" in name_lower
+        or "k2.5" in name_lower
+        or "k2_5" in name_lower
+        or "gemma-4-31b" in name_lower
+    )
+    return not name_is_decisive
+
+
+def resolve_model_family(model_name):
+    """Return ``(family, config)`` for *model_name*.
+
+    The checkpoint's own ``model_type`` decides the family before any
+    name-based routing, so a Qwen4Exp checkpoint is never silently served by
+    the generic Qwen3 wrappers. ``config`` is None when the family dispatched
+    on the name alone and no config was needed.
+    """
+    from src.models import classify_model
+
+    name_lower = (model_name or "").lower()
+    config = None
+    load_error = None
+    if _needs_config_inspection(name_lower):
+        try:
+            config = load_dispatch_config(model_name)
+        except Exception as exc:
+            if "qwen3" in name_lower or "qwen4" in name_lower:
+                # The Qwen3/Qwen4 families are decided by the config; without
+                # it there is nothing safe to dispatch to.
+                raise
+            config = None
+            load_error = exc
+    try:
+        return classify_model(model_name, config), config
+    except ValueError as err:
+        if load_error is not None:
+            raise ValueError(f"{err} (config load failed: {load_error!r})") from load_error
+        raise
+
+
+def get_model_wrapper(
+    model_name, tokenizer, batch_size, seqlen, device, dtype, world_size, dummy=False
+):
+    from src.models import (
+        FAMILY_GEMMA4,
+        FAMILY_KIMI,
+        FAMILY_KIMI_K25,
+        FAMILY_LLAMA,
+        FAMILY_QWEN3,
+        FAMILY_QWEN4_EXP,
+        FAMILY_QWEN35,
+    )
+
+    family, config = resolve_model_family(model_name)
+
+    if family == FAMILY_QWEN4_EXP:
+        from src.models.qwen4_exp import Qwen4ExpWrapper
+
+        return Qwen4ExpWrapper(
+            model_name, tokenizer, batch_size, seqlen, device, dtype, dummy=dummy
+        )
+    elif family == FAMILY_LLAMA:
         from src.models.llama import LLaMAWrapper
+
         return LLaMAWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
-    elif 'qwen3.5' in name_lower or 'qwen3.6' in name_lower:
-        from transformers import AutoConfig as _AC
-        _cfg = _AC.from_pretrained(model_name, trust_remote_code=True)
-        _tc = getattr(_cfg, 'text_config', _cfg)
-        _is_moe = hasattr(_tc, 'num_experts') or hasattr(_tc, 'num_local_experts')
+    elif family == FAMILY_QWEN35:
+        if config is None:
+            config = load_dispatch_config(model_name)
+        _tc = getattr(config, "text_config", config)
+        _is_moe = hasattr(_tc, "num_experts") or hasattr(_tc, "num_local_experts")
         if _is_moe and world_size > 1:
             from src.models.qwen35_moe_dist import Qwen35MoeDistributedWrapper
-            return Qwen35MoeDistributedWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
+
+            return Qwen35MoeDistributedWrapper(
+                model_name, tokenizer, batch_size, seqlen, device, dtype
+            )
         elif _is_moe:
             from src.models.qwen35_moe import Qwen35MoeWrapper
+
             return Qwen35MoeWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
         else:
             from src.models.qwen35 import Qwen35Wrapper
+
             return Qwen35Wrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
-    elif 'qwen3' in name_lower:
-        from transformers import AutoConfig as _AC
-        _cfg = _AC.from_pretrained(model_name, trust_remote_code=True)
-        _tc = getattr(_cfg, 'text_config', _cfg)
-        _is_moe = hasattr(_tc, 'num_experts') or hasattr(_tc, 'num_local_experts')
+    elif family == FAMILY_QWEN3:
+        if config is None:
+            config = load_dispatch_config(model_name)
+        _tc = getattr(config, "text_config", config)
+        _is_moe = hasattr(_tc, "num_experts") or hasattr(_tc, "num_local_experts")
         if _is_moe and world_size > 1:
             from src.models.qwen3_moe_dist import Qwen3MoeDistributedWrapper
-            return Qwen3MoeDistributedWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
+
+            return Qwen3MoeDistributedWrapper(
+                model_name, tokenizer, batch_size, seqlen, device, dtype
+            )
         elif _is_moe:
             from src.models.qwen3_moe import Qwen3MoeWrapper
+
             return Qwen3MoeWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
         else:
             from src.models.qwen3 import Qwen3Wrapper
+
             return Qwen3Wrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
-    elif ('k2.5' in name_lower or 'k2_5' in name_lower) and world_size > 1:
-        from src.models.kimi_k25_dist import KimiK25DistributedWrapper
-        return KimiK25DistributedWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype, dummy=dummy)
-    elif 'k2.5' in name_lower or 'k2_5' in name_lower:
+    elif family == FAMILY_KIMI_K25:
+        if world_size > 1:
+            from src.models.kimi_k25_dist import KimiK25DistributedWrapper
+
+            return KimiK25DistributedWrapper(
+                model_name, tokenizer, batch_size, seqlen, device, dtype, dummy=dummy
+            )
         from src.models.kimi_k25 import KimiK25Wrapper
+
         return KimiK25Wrapper(model_name, tokenizer, batch_size, seqlen, device, dtype, dummy=dummy)
-    elif 'kimi' in name_lower and world_size > 1:
-        from src.models.kimi_k2_dist import KimiK2DistributedWrapper
-        return KimiK2DistributedWrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
-    elif 'kimi' in name_lower:
+    elif family == FAMILY_KIMI:
+        if world_size > 1:
+            from src.models.kimi_k2_dist import KimiK2DistributedWrapper
+
+            return KimiK2DistributedWrapper(
+                model_name, tokenizer, batch_size, seqlen, device, dtype
+            )
         from src.models.kimi_k2 import KimiK2Wrapper
+
         return KimiK2Wrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
-    elif 'gemma-4-31b' in name_lower:
+    elif family == FAMILY_GEMMA4:
         from src.models.gemma4 import Gemma4Wrapper
+
         return Gemma4Wrapper(model_name, tokenizer, batch_size, seqlen, device, dtype)
     else:
         raise ValueError(f"Unsupported model family: {model_name}")
+
 
 def main():
     load_dotenv()
